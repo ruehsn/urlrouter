@@ -1,0 +1,37 @@
+# URL Router configuration
+#
+# Each line is:   <pattern>   <browser>
+# Rules are checked top to bottom and the FIRST match wins, so put specific
+# rules above general ones and keep the catch-all  *  last.
+#
+# Patterns
+#   youtube.com                 that site and every subdomain (www., m., music.)
+#                               on http or https
+#   docs.google.com/document    that site, only paths starting with /document
+#   https://github.com/my-org   anything containing :// is a plain prefix of the
+#                               full URL (case-insensitive)
+#   *                           everything else
+#
+# Browsers
+#   chrome  firefox  edge  brave  vivaldi  opera  librewolf
+#       found automatically wherever they're installed
+#   "C:\Path\To\browser.exe"
+#       any program; put quotes around paths with spaces
+#   Anything after the browser is passed as extra arguments, e.g.
+#       example.com   firefox -private-window
+#   The URL is added as the last argument, or put %URL% where it should go:
+#       example.com   chrome --app=%URL%
+#   %ENVIRONMENT% variables such as %LOCALAPPDATA% are expanded.
+#
+# Named browsers (optional), for profiles or reuse:
+#   browser work "C:\Program Files\Mozilla Firefox\firefox.exe" -P Work
+#   github.com/my-company   work
+#
+# Lines starting with # are comments. Changes take effect on the next click;
+# no restart needed. Try a URL without opening it:
+#   urlrouter.exe --test https://www.youtube.com/
+
+youtube.com     firefox
+youtu.be        firefox
+
+*               chrome

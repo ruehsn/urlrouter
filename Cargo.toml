@@ -1,0 +1,17 @@
+[package]
+name = "urlrouter"
+version = "1.0.0"
+edition = "2021"
+description = "Tiny Windows 'default browser' that forwards each link to a real browser chosen by URL prefix rules"
+publish = false
+
+# Deliberately no [dependencies]: the Win32 calls are declared by hand in
+# src/win.rs so the build is offline-reproducible and the .exe needs nothing
+# beyond DLLs that ship with every Windows install.
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
