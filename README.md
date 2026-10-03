@@ -13,6 +13,13 @@ everything else goes to Chrome.
   folder, e.g. `C:\Tools\URLRouter\` or on a USB stick.
 - Rule changes apply on the next click, with nothing to restart.
 
+## Download
+
+Get `urlrouter.exe` from the
+[latest release](https://github.com/ruehsn/urlrouter/releases/latest).
+It's unsigned, so Windows SmartScreen warns the first time you run it:
+choose **More info → Run anyway**.
+
 ## Setup
 
 1. Put `urlrouter.exe` in the folder where it will stay.
@@ -130,3 +137,12 @@ covered by unit tests that run anywhere:
 ```sh
 cargo test
 ```
+
+## Releases
+
+GitHub Actions ([`.github/workflows/build.yml`](.github/workflows/build.yml))
+tests and builds every push and pull request on a Windows runner; the exe is
+attached to each run as an artifact. When a push to `main` carries a
+`version` in `Cargo.toml` that has no release yet, the workflow publishes
+release `v<version>` with the exe attached. To ship a new version, bump
+`version` in `Cargo.toml` and push.

@@ -1,0 +1,59 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Write access is only used by the release step, which runs only for main.
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Rust is preinstalled on GitHub's Windows runners. This is the native
+      # MSVC build; .cargo/config.toml links the CRT statically.
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: urlrouter
+          path: target/release/urlrouter.exe
+
+      # Releasing is keyed on Cargo.toml's version, so shipping a new version
+      # is "bump the version and push" with no tag to create by hand. Pushes
+      # that don't change the version leave the existing release alone.
+      - name: Publish release for a new version
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          tag="v$version"
+          if gh release view "$tag" > /dev/null 2>&1; then
+            echo "$tag is already released. Bump version in Cargo.toml to publish a new one."
+            exit 0
+          fi
+          sha=$(sha256sum target/release/urlrouter.exe | cut -d ' ' -f 1)
+          cat > notes.md <<NOTES
+          **Download \`urlrouter.exe\` below**, put it in the folder where it will stay, and double-click it to register it as a browser and edit the rules. See the [README](https://github.com/${GITHUB_REPOSITORY}#readme) for the rule format.
+
+          - 64-bit Windows 10/11, no installer or runtime needed
+          - Unsigned, so SmartScreen warns on first run: **More info → Run anyway**
+
+          SHA-256 \`$sha\`
+          NOTES
+          gh release create "$tag" target/release/urlrouter.exe \
+            --target "$GITHUB_SHA" \
+            --title "URL Router $version" \
+            --notes-file notes.md
