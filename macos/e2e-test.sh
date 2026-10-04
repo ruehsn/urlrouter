@@ -64,6 +64,13 @@ example.org  "$fake" --profile=Work
 *            "$fake"
 CFG
 
+echo "--- bundle"
+sips -s format png "$app/Contents/Resources/AppIcon.icns" --out "$work/icon.png" > /dev/null \
+  || fail "macOS can't read the app icon"
+expect "the app icon is a 1024 px image" "pixelWidth: 1024" "$(sips -g pixelWidth "$work/icon.png")"
+expect "Info.plist points at the icon" "AppIcon" \
+  "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$app/Contents/Info.plist")"
+
 echo "--- rules (--test)"
 out=$("$bin" --test "https://acme.slack.com/archives/C0123ABC/p1712345678123456")
 expect "workspace permalink becomes a Slack deep link" \

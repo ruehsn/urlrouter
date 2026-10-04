@@ -1,3 +1,5 @@
+<img src="assets/icon.png" alt="" width="112" align="right">
+
 # URL Router
 
 A tiny program for **Windows and macOS** that you set as your **default
@@ -206,10 +208,18 @@ It's written in Rust with **no crate dependencies**:
 | `src/win.rs` | the Win32 calls (registry, dialogs), declared by hand |
 | `src/mac.rs` | the AppKit and LaunchServices calls, declared by hand |
 | `src/win_app.rs`, `src/mac_app.rs` | each platform's app |
+| `build.rs` | embeds the icon in the Windows exe |
+| `assets/make_icons.py` | draws the icon and writes the `.ico`, `.icns` and previews |
 
 On macOS, links reach the default browser as Apple Events rather than
 command-line arguments, so the Mac app runs a minimal `NSApplication` to
 receive them.
+
+The icon's three-way split uses the colours of Firefox, Edge and Chrome, but
+it's an original drawing rather than a mix of their logos, which their owners
+don't allow to be altered or combined. To change it, edit
+`assets/make_icons.py`, run it (it needs Pillow), and commit the files it
+writes.
 
 **Windows, on Windows:** install [Rust](https://rustup.rs) with the default
 MSVC toolchain, then run `cargo build --release`. The output is

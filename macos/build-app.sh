@@ -20,6 +20,9 @@ lipo -create -output "$app/Contents/MacOS/urlrouter" \
   target/aarch64-apple-darwin/release/urlrouter \
   target/x86_64-apple-darwin/release/urlrouter
 sed "s/@VERSION@/$version/g" macos/Info.plist > "$app/Contents/Info.plist"
+# Drawn by assets/make_icons.py.
+mkdir -p "$app/Contents/Resources"
+cp macos/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
 plutil -lint "$app/Contents/Info.plist"
 
 # Ad-hoc signature. Apple silicon won't run unsigned code at all, and signing
