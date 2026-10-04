@@ -1,8 +1,9 @@
 //! Config parsing, URL matching and command-line building.
 //!
-//! Everything here is pure logic with no Win32 calls, so `cargo test` runs it
-//! on any platform. The Windows-only pieces (registry, message boxes, locating
-//! installed browsers) live in `win.rs` and are injected as closures.
+//! Everything here is pure logic with no OS calls, so `cargo test` runs it on
+//! any platform. The platform pieces (registry or LaunchServices, dialogs,
+//! locating installed browsers) live in `win.rs` / `mac.rs` and are injected
+//! as closures.
 
 use std::collections::HashMap;
 
@@ -69,7 +70,7 @@ impl Pattern {
 /// Splits `scheme://[user@]host[:port]/rest` into (lowercased host, "/rest").
 /// Returns None for things that aren't URLs with an authority, such as local
 /// file paths handed over by an .html file association.
-fn split_host(url: &str) -> Option<(String, &str)> {
+pub(crate) fn split_host(url: &str) -> Option<(String, &str)> {
     let i = url.find("://")?;
     let scheme = &url[..i];
     if scheme.is_empty()
@@ -99,7 +100,7 @@ fn split_host(url: &str) -> Option<(String, &str)> {
     ))
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Rule {
     pub pattern: Pattern,
     pub pattern_text: String,
@@ -107,11 +108,34 @@ pub struct Rule {
     pub line: usize,
 }
 
+impl Rule {
+    /// A bare `slack` target asks for the link to be opened in the Slack app.
+    /// A user-defined `browser slack ...` alias takes precedence, so this is
+    /// checked against the aliases too.
+    fn wants_slack_app(&self, aliases: &HashMap<String, String>) -> bool {
+        self.target.trim().eq_ignore_ascii_case("slack") && !aliases.contains_key("slack")
+    }
+}
+
+/// What to do with a URL once the rules have been applied.
+#[derive(Debug, PartialEq)]
+pub enum Decision<'a> {
+    /// Open the URL with the browser described by `rule.target`.
+    Browser(&'a Rule),
+    /// Open this `slack://` deep link, which the Slack app handles.
+    Slack { rule: &'a Rule, link: String },
+    /// No rule matched.
+    NoMatch,
+}
+
 #[derive(Debug, Default)]
 pub struct Config {
     pub rules: Vec<Rule>,
     /// `browser <name> <command>` lines, keyed by lowercased name.
     pub aliases: HashMap<String, String>,
+    /// `slack-team <workspace> <ID>` lines: lowercased workspace subdomain
+    /// (`acme` for acme.slack.com) to team ID.
+    pub slack_teams: HashMap<String, String>,
     /// Problems found while parsing, already prefixed with the line number.
     /// Bad lines are skipped rather than fatal so one typo doesn't stop every
     /// link from opening.
@@ -139,6 +163,20 @@ impl Config {
                         cfg.aliases.insert(name.to_lowercase(), cmd.to_string());
                     }
                 }
+                "slack-team" => {
+                    let (name, id) = split_first_word(rest);
+                    // Accept the workspace written as a full host, too.
+                    let name = name.to_ascii_lowercase();
+                    let name = name.strip_suffix(".slack.com").unwrap_or(&name);
+                    if name.is_empty() || !crate::slack::is_team_id(id) {
+                        cfg.errors.push(format!(
+                            "line {line_no}: expected `slack-team <workspace> <team ID>`, \
+                             e.g. `slack-team acme T0123ABCD`"
+                        ));
+                    } else {
+                        cfg.slack_teams.insert(name.to_string(), id.to_string());
+                    }
+                }
                 "default" => cfg.push_rule(Pattern::Any, "*", rest, line_no),
                 _ => match Pattern::parse(first) {
                     Ok(p) => cfg.push_rule(p, first, rest, line_no),
@@ -163,9 +201,35 @@ impl Config {
         });
     }
 
-    /// First matching rule wins, top to bottom.
+    /// First matching rule, top to bottom, without `decide`'s Slack
+    /// fall-through. Tests use it to check pattern matching on its own.
+    #[cfg(test)]
     pub fn find(&self, url: &str) -> Option<&Rule> {
         self.rules.iter().find(|r| r.pattern.matches(url))
+    }
+
+    /// Like `find`, but a matching `slack` rule only claims the URL if it can
+    /// be turned into a Slack deep link. Otherwise matching carries on down
+    /// the list, so Slack's web-only pages (and workspaces with no
+    /// `slack-team` line) still reach a browser.
+    pub fn decide(&self, url: &str) -> Decision<'_> {
+        for rule in self.rules.iter().filter(|r| r.pattern.matches(url)) {
+            if !rule.wants_slack_app(&self.aliases) {
+                return Decision::Browser(rule);
+            }
+            if let Some(link) = crate::slack::deep_link(url, &self.slack_teams) {
+                return Decision::Slack { rule, link };
+            }
+        }
+        Decision::NoMatch
+    }
+
+    /// The catch-all rule, used to open "the browser" with no URL. Skips
+    /// `slack` rules, which only make sense with a link.
+    pub fn catch_all(&self) -> Option<&Rule> {
+        self.rules
+            .iter()
+            .find(|r| r.pattern == Pattern::Any && !r.wants_slack_app(&self.aliases))
     }
 }
 
@@ -202,10 +266,16 @@ pub fn decode_text(bytes: &[u8]) -> String {
 /// A browser the config can name without a path.
 pub struct Builtin {
     pub name: &'static str,
-    /// Looked up under the registry's `App Paths` key first.
+    /// Windows: looked up under the registry's `App Paths` key first.
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub exe: &'static str,
-    /// Fallback install locations, with %VARS% expanded at runtime.
+    /// Windows: fallback install locations, with %VARS% expanded at runtime.
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub paths: &'static [&'static str],
+    /// macOS: bundle identifier, resolved through LaunchServices wherever the
+    /// app is installed. Empty if the browser has no Mac version.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub mac: &'static str,
 }
 
 pub const BUILTINS: &[Builtin] = &[
@@ -217,6 +287,7 @@ pub const BUILTINS: &[Builtin] = &[
             r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe",
             r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe",
         ],
+        mac: "com.google.Chrome",
     },
     Builtin {
         name: "firefox",
@@ -226,6 +297,7 @@ pub const BUILTINS: &[Builtin] = &[
             r"%ProgramFiles(x86)%\Mozilla Firefox\firefox.exe",
             r"%LOCALAPPDATA%\Mozilla Firefox\firefox.exe",
         ],
+        mac: "org.mozilla.firefox",
     },
     Builtin {
         name: "edge",
@@ -234,6 +306,7 @@ pub const BUILTINS: &[Builtin] = &[
             r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe",
             r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe",
         ],
+        mac: "com.microsoft.edgemac",
     },
     Builtin {
         name: "brave",
@@ -243,6 +316,7 @@ pub const BUILTINS: &[Builtin] = &[
             r"%ProgramFiles(x86)%\BraveSoftware\Brave-Browser\Application\brave.exe",
             r"%LOCALAPPDATA%\BraveSoftware\Brave-Browser\Application\brave.exe",
         ],
+        mac: "com.brave.Browser",
     },
     Builtin {
         name: "vivaldi",
@@ -251,6 +325,7 @@ pub const BUILTINS: &[Builtin] = &[
             r"%LOCALAPPDATA%\Vivaldi\Application\vivaldi.exe",
             r"%ProgramFiles%\Vivaldi\Application\vivaldi.exe",
         ],
+        mac: "com.vivaldi.Vivaldi",
     },
     Builtin {
         name: "opera",
@@ -259,11 +334,25 @@ pub const BUILTINS: &[Builtin] = &[
             r"%LOCALAPPDATA%\Programs\Opera\opera.exe",
             r"%ProgramFiles%\Opera\opera.exe",
         ],
+        mac: "com.operasoftware.Opera",
     },
     Builtin {
         name: "librewolf",
         exe: "librewolf.exe",
         paths: &[r"%ProgramFiles%\LibreWolf\librewolf.exe"],
+        mac: "",
+    },
+    Builtin {
+        name: "safari",
+        exe: "",
+        paths: &[],
+        mac: "com.apple.Safari",
+    },
+    Builtin {
+        name: "arc",
+        exe: "",
+        paths: &[],
+        mac: "company.thebrowser.Browser",
     },
 ];
 
@@ -367,8 +456,8 @@ pub fn build_command(
     let program = match builtin(&tokens[0]) {
         Some(b) => locate(b).ok_or_else(|| {
             format!(
-                "`{}` was requested but {} could not be found on this PC.",
-                b.name, b.exe
+                "`{}` was requested but it could not be found on this computer.",
+                b.name
             )
         })?,
         None => expand_env(&tokens[0], env),
@@ -392,6 +481,83 @@ pub fn build_command(
         args.push(u.to_string());
     }
     Ok((program, args))
+}
+
+/// The concrete action for one URL, ready for a platform launcher.
+#[derive(Debug, PartialEq)]
+pub enum Plan {
+    /// Start `program` with `args` (the URL is already among them).
+    Run { program: String, args: Vec<String> },
+    /// Hand this `slack://` link to the OS, which opens it in the Slack app.
+    OpenSlack(String),
+}
+
+#[derive(Debug)]
+pub struct Resolved {
+    /// The rule used, for error messages and `--test`.
+    pub why: String,
+    pub plan: Plan,
+}
+
+/// Applies the rules to `url` (None = open the catch-all browser with no
+/// link). `last_resort` is the browser used when nothing matches, so a config
+/// without a `*` line still opens links somewhere instead of dropping them.
+pub fn resolve(
+    cfg: &Config,
+    url: Option<&str>,
+    last_resort: &str,
+    locate: &dyn Fn(&Builtin) -> Option<String>,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<Resolved, String> {
+    let describe = |r: &Rule| format!("line {}: {}  {}", r.line, r.pattern_text, r.target);
+    let decision = match url {
+        Some(u) => cfg.decide(u),
+        None => cfg.catch_all().map_or(Decision::NoMatch, Decision::Browser),
+    };
+    let (target, why) = match decision {
+        Decision::Slack { rule, link } => {
+            return Ok(Resolved {
+                why: describe(rule),
+                plan: Plan::OpenSlack(link),
+            })
+        }
+        Decision::Browser(rule) => (rule.target.as_str(), describe(rule)),
+        Decision::NoMatch => (last_resort, format!("no rule matched, using {last_resort}")),
+    };
+    let (program, args) = build_command(target, url, &cfg.aliases, locate, env)
+        .map_err(|e| format!("{e}\n\nRule used: {why}"))?;
+    Ok(Resolved {
+        why,
+        plan: Plan::Run { program, args },
+    })
+}
+
+/// macOS: the arguments for /usr/bin/open that carry out `plan`.
+///
+/// With no extra arguments the URL is handed over as an Apple Event, which
+/// a running browser opens in a new tab. Extra arguments (profiles and the
+/// like) only reach a browser through a fresh launch (`-n ... --args`);
+/// Chromium- and Firefox-based browsers then forward the link to the
+/// already-running instance themselves.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn mac_open_args(plan: &Plan, url: Option<&str>) -> Vec<String> {
+    match plan {
+        // LaunchServices sends slack: links to the Slack app.
+        Plan::OpenSlack(link) => vec![link.clone()],
+        Plan::Run { program, args } => {
+            let mut v = vec!["-a".to_string(), program.clone()];
+            match url {
+                Some(u) if args.len() == 1 && args[0] == u => v.push(u.to_string()),
+                _ if args.is_empty() => {}
+                _ => {
+                    v.insert(0, "-n".into());
+                    v.push("--args".into());
+                    v.extend(args.iter().cloned());
+                }
+            }
+            v
+        }
+    }
 }
 
 #[cfg(test)]
@@ -632,7 +798,7 @@ example.org          brave
     #[test]
     fn missing_builtin_is_a_clear_error() {
         let err = build("opera", Some("u")).unwrap_err();
-        assert!(err.contains("opera.exe"), "{err}");
+        assert!(err.contains("`opera`"), "{err}");
     }
 
     #[test]
@@ -644,5 +810,179 @@ example.org          brave
             "firefox"
         );
         assert_eq!(c.find("https://example.com/").unwrap().target, "chrome");
+    }
+
+    #[test]
+    fn slack_rules_claim_only_links_they_can_convert() {
+        let c = Config::parse("slack-team acme T0ACME\nslack.com slack\n* chrome");
+        assert!(c.errors.is_empty(), "{:?}", c.errors);
+        match c.decide("https://acme.slack.com/archives/C0123") {
+            Decision::Slack { rule, link } => {
+                assert_eq!(link, "slack://channel?team=T0ACME&id=C0123");
+                assert_eq!(rule.line, 2);
+            }
+            d => panic!("{d:?}"),
+        }
+        // Web-only pages and workspaces without a slack-team line fall
+        // through to the next matching rule.
+        for u in [
+            "https://acme.slack.com/admin",
+            "https://other.slack.com/archives/C0123",
+            "https://slack.com/pricing",
+        ] {
+            assert!(
+                matches!(c.decide(u), Decision::Browser(r) if r.target == "chrome"),
+                "{u}"
+            );
+        }
+        assert!(matches!(
+            c.decide("https://youtube.com/"),
+            Decision::Browser(r) if r.target == "chrome"
+        ));
+        assert_eq!(
+            Config::parse("slack.com slack").decide("https://slack.com/"),
+            Decision::NoMatch
+        );
+    }
+
+    #[test]
+    fn slack_alias_overrides_the_slack_target() {
+        let c = Config::parse("browser slack safari\nslack.com slack");
+        assert!(matches!(
+            c.decide("https://app.slack.com/client/T1/C1"),
+            Decision::Browser(_)
+        ));
+    }
+
+    #[test]
+    fn catch_all_skips_slack_rules() {
+        let c = Config::parse("* slack\n* edge");
+        assert_eq!(c.catch_all().unwrap().target, "edge");
+        assert!(Config::parse("youtube.com firefox").catch_all().is_none());
+    }
+
+    #[test]
+    fn slack_team_lines_are_validated() {
+        let c =
+            Config::parse("slack-team ACME.slack.com T0ACME\nslack-team bad t0lower\nslack-team");
+        assert_eq!(
+            c.slack_teams.get("acme").map(String::as_str),
+            Some("T0ACME")
+        );
+        assert_eq!(c.errors.len(), 2, "{:?}", c.errors);
+        assert!(c.errors[0].starts_with("line 2:"));
+    }
+
+    #[test]
+    fn default_mac_config_parses_cleanly() {
+        let c = Config::parse(crate::DEFAULT_CONFIG_MAC);
+        assert!(c.errors.is_empty(), "{:?}", c.errors);
+        assert!(matches!(
+            c.decide("https://app.slack.com/client/T0X/C0Y"),
+            Decision::Slack { .. }
+        ));
+        assert!(matches!(
+            c.decide("https://www.youtube.com/watch"),
+            Decision::Browser(r) if r.target == "firefox"
+        ));
+        assert!(matches!(
+            c.decide("https://example.com/"),
+            Decision::Browser(r) if r.target == "chrome"
+        ));
+    }
+
+    #[test]
+    fn resolve_builds_a_plan_per_decision() {
+        let c =
+            Config::parse("slack-team acme T0ACME\nslack.com slack\nyoutube.com firefox\n* chrome");
+        let r = |u: Option<&str>| resolve(&c, u, "edge", &fake_locate, &fake_env).unwrap();
+
+        let slack = r(Some("https://acme.slack.com/archives/C01"));
+        assert_eq!(
+            slack.plan,
+            Plan::OpenSlack("slack://channel?team=T0ACME&id=C01".into())
+        );
+        assert_eq!(slack.why, "line 2: slack.com  slack");
+
+        let yt = r(Some("https://youtube.com/x"));
+        assert_eq!(
+            yt.plan,
+            Plan::Run {
+                program: r"C:\B\firefox.exe".into(),
+                args: vec!["https://youtube.com/x".into()]
+            }
+        );
+
+        // No URL: the catch-all browser, opened bare.
+        assert_eq!(
+            r(None).plan,
+            Plan::Run {
+                program: r"C:\B\chrome.exe".into(),
+                args: vec![]
+            }
+        );
+
+        // Nothing matches: the last-resort browser.
+        let none = Config::parse("youtube.com firefox");
+        let lr = resolve(&none, Some("https://x/"), "edge", &fake_locate, &fake_env).unwrap();
+        assert_eq!(lr.why, "no rule matched, using edge");
+        assert!(matches!(lr.plan, Plan::Run { ref program, .. } if program == r"C:\B\edge.exe"));
+
+        // Errors name the rule that was used.
+        let err = resolve(
+            &Config::parse("* opera"),
+            Some("u"),
+            "edge",
+            &fake_locate,
+            &fake_env,
+        )
+        .unwrap_err();
+        assert!(err.contains("Rule used: line 1: *  opera"), "{err}");
+    }
+
+    #[test]
+    fn mac_open_args_per_plan() {
+        let run = |args: &[&str]| Plan::Run {
+            program: "/Applications/Firefox.app".into(),
+            args: args.iter().map(|a| a.to_string()).collect(),
+        };
+        let u = "https://x/";
+        // Plain link: an Apple Event to the (possibly running) browser.
+        assert_eq!(
+            mac_open_args(&run(&[u]), Some(u)),
+            ["-a", "/Applications/Firefox.app", u]
+        );
+        // Extra arguments need a fresh launch to reach the browser.
+        assert_eq!(
+            mac_open_args(&run(&["-P", "Work", u]), Some(u)),
+            [
+                "-n",
+                "-a",
+                "/Applications/Firefox.app",
+                "--args",
+                "-P",
+                "Work",
+                u
+            ]
+        );
+        assert_eq!(
+            mac_open_args(&run(&["--app=https://x/"]), Some(u)),
+            [
+                "-n",
+                "-a",
+                "/Applications/Firefox.app",
+                "--args",
+                "--app=https://x/"
+            ]
+        );
+        // No URL: just open the app.
+        assert_eq!(
+            mac_open_args(&run(&[]), None),
+            ["-a", "/Applications/Firefox.app"]
+        );
+        assert_eq!(
+            mac_open_args(&Plan::OpenSlack("slack://open?team=T1".into()), Some(u)),
+            ["slack://open?team=T1"]
+        );
     }
 }

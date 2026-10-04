@@ -1,0 +1,50 @@
+# URL Router configuration
+#
+# Each line is:   <pattern>   <browser>
+# Rules are checked top to bottom and the FIRST match wins, so put specific
+# rules above general ones and keep the catch-all  *  last.
+#
+# Patterns
+#   youtube.com                 that site and every subdomain (www., m., music.)
+#                               on http or https
+#   docs.google.com/document    that site, only paths starting with /document
+#   https://github.com/my-org   anything containing :// is a plain prefix of the
+#                               full URL (case-insensitive)
+#   *                           everything else
+#
+# Browsers
+#   safari  chrome  firefox  edge  brave  vivaldi  opera  arc
+#       found automatically wherever they're installed
+#   "Google Chrome Canary"  or  "/Applications/Some Browser.app"
+#       any other app, by name or path; quote names with spaces
+#   Anything after the browser is passed as extra arguments, e.g.
+#       example.com   chrome --profile-directory="Profile 1"
+#   The URL is added as the last argument, or put %URL% where it should go.
+#
+# Named browsers (optional), for profiles or reuse:
+#   browser work chrome --profile-directory="Profile 1"
+#   github.com/my-company   work
+#
+# Slack
+#   The  slack  target opens Slack links in the Slack app instead of a
+#   browser tab. app.slack.com links always work. For links like
+#   https://acme.slack.com/archives/C0123..., tell URL Router the
+#   workspace's team ID (it starts with T or E):
+#
+#     slack-team  acme  T0123ABCD
+#
+#   To find it, open the workspace in a browser: the address becomes
+#   app.slack.com/client/T0123ABCD/... and the T... part is the ID.
+#   Slack links that can't be opened in the app (sign-in, admin and help
+#   pages, workspaces with no slack-team line) continue to the next rule.
+#
+# Lines starting with # are comments. Changes take effect on the next click.
+# Try a URL without opening it, in Terminal:
+#   "/Applications/URL Router.app/Contents/MacOS/urlrouter" --test https://youtube.com/
+
+slack.com       slack
+
+youtube.com     firefox
+youtu.be        firefox
+
+*               chrome

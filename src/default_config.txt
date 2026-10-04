@@ -27,6 +27,14 @@
 #   browser work "C:\Program Files\Mozilla Firefox\firefox.exe" -P Work
 #   github.com/my-company   work
 #
+# Slack (optional): open Slack links in the Slack app instead of a browser
+# tab. Links it can't open in the app continue to the next rule. Links like
+# https://acme.slack.com/... need the workspace's team ID, which you can see
+# in the address bar (app.slack.com/client/T0123ABCD/...) when you open the
+# workspace in a browser:
+#   slack-team  acme  T0123ABCD
+#   slack.com   slack
+#
 # Lines starting with # are comments. Changes take effect on the next click;
 # no restart needed. Try a URL without opening it:
 #   urlrouter.exe --test https://www.youtube.com/

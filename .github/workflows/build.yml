@@ -6,18 +6,17 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Write access is only used by the release step, which runs only for main.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  build:
+  windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
-      # Rust is preinstalled on GitHub's Windows runners. This is the native
-      # MSVC build; .cargo/config.toml links the CRT statically.
+      # Rust is preinstalled on GitHub's runners. This is the native MSVC
+      # build; .cargo/config.toml links the CRT statically.
       - name: Test
         run: cargo test --locked
 
@@ -26,15 +25,54 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: urlrouter
+          name: urlrouter-windows
           path: target/release/urlrouter.exe
 
-      # Releasing is keyed on Cargo.toml's version, so shipping a new version
-      # is "bump the version and push" with no tag to create by hand. Pushes
-      # that don't change the version leave the existing release alone.
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build app
+        run: macos/build-app.sh
+
+      - name: End-to-end test
+        run: macos/e2e-test.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: urlrouter-mac
+          path: dist/URLRouter-mac.zip
+
+      - name: Keep the menu screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-menu-screenshot
+          path: dist/e2e-menu.png
+          if-no-files-found: ignore
+
+  # Releasing is keyed on Cargo.toml's version, so shipping a new version is
+  # "bump the version and push" with no tag to create by hand. Pushes that
+  # don't change the version leave the existing release alone.
+  release:
+    needs: [windows, macos]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: urlrouter-*
+          path: artifacts
+
       - name: Publish release for a new version
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -44,16 +82,21 @@ jobs:
             echo "$tag is already released. Bump version in Cargo.toml to publish a new one."
             exit 0
           fi
-          sha=$(sha256sum target/release/urlrouter.exe | cut -d ' ' -f 1)
+          exe=artifacts/urlrouter-windows/urlrouter.exe
+          zip=artifacts/urlrouter-mac/URLRouter-mac.zip
           cat > notes.md <<NOTES
-          **Download \`urlrouter.exe\` below**, put it in the folder where it will stay, and double-click it to register it as a browser and edit the rules. See the [README](https://github.com/${GITHUB_REPOSITORY}#readme) for the rule format.
+          **Windows:** download \`urlrouter.exe\`, put it in the folder where it will stay, and double-click it.
 
-          - 64-bit Windows 10/11, no installer or runtime needed
-          - Unsigned, so SmartScreen warns on first run: **More info → Run anyway**
+          **Mac:** download \`URLRouter-mac.zip\`, unzip it, move **URL Router** to Applications, and open it.
 
-          SHA-256 \`$sha\`
+          Both are unsigned, so the first launch needs one extra step; see [Download](https://github.com/${GITHUB_REPOSITORY}#download) in the README.
+
+          | File | SHA-256 |
+          |---|---|
+          | \`urlrouter.exe\` | \`$(sha256sum "$exe" | cut -d ' ' -f 1)\` |
+          | \`URLRouter-mac.zip\` | \`$(sha256sum "$zip" | cut -d ' ' -f 1)\` |
           NOTES
-          gh release create "$tag" target/release/urlrouter.exe \
+          gh release create "$tag" "$exe" "$zip" \
             --target "$GITHUB_SHA" \
             --title "URL Router $version" \
             --notes-file notes.md
